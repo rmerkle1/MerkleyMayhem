@@ -12,8 +12,9 @@ export default function HostView() {
   const [subs, setSubs]       = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState('')
-  const [busy, setBusy]       = useState(false)
-  const [copied, setCopied]   = useState(false)
+  const [busy, setBusy]         = useState(false)
+  const [copied, setCopied]     = useState(false)
+  const [resolveError, setResolveError] = useState('')
 
   const gameIdRef    = useRef(null)
   const resolvingRef = useRef(false)
@@ -68,8 +69,13 @@ export default function HostView() {
         && gameData.resolved_round < gameData.current_round
         && !resolvingRef.current) {
       resolvingRef.current = true
-      await applyRoundResolution(gameData, teamsData || [], subsData || [])
-      resolvingRef.current = false
+      try {
+        await applyRoundResolution(gameData, teamsData || [], subsData || [])
+      } catch(e) {
+        setResolveError('Auto-resolve: ' + e.message)
+      } finally {
+        resolvingRef.current = false
+      }
     }
   }
 
@@ -102,19 +108,21 @@ export default function HostView() {
     // Apply score changes to all teams
     for (const team of t) {
       const d = deltas[team.id] || 0
-      await supabase.from('teams')
+      const { error: teamErr } = await supabase.from('teams')
         .update({ score: team.score + d, last_delta: d })
         .eq('id', team.id)
+      if (teamErr) throw new Error(`Score update failed: ${teamErr.message}`)
     }
 
     // Advance round or end game
     const isLast = g.current_round >= g.total_rounds
-    await supabase.from('games')
+    const { error: gameErr } = await supabase.from('games')
       .update({
         resolved_round: g.current_round,
         ...(isLast ? { status: 'ended' } : { current_round: g.current_round + 1 }),
       })
       .eq('id', g.id)
+    if (gameErr) throw new Error(`Game update failed: ${gameErr.message}`)
 
     await load()
   }
@@ -226,24 +234,26 @@ export default function HostView() {
 
   async function forceResolve() {
     setBusy(true)
-    resolvingRef.current = false  // reset so force resolve is never blocked
-    const { data: freshGame } = await supabase.from('games').select('*').eq('room_code', roomCode).single()
-    if (!freshGame) { setBusy(false); return }
-    const { data: freshTeams } = await supabase.from('teams').select('*').eq('game_id', freshGame.id)
-    const { data: freshSubs } = await supabase.from('submissions').select('*')
-      .eq('game_id', freshGame.id).eq('round_number', freshGame.current_round)
-    // Force-reset resolved_round so re-apply is never blocked
-    await supabase.from('games')
-      .update({ resolved_round: freshGame.current_round - 1 })
-      .eq('id', freshGame.id)
-    resolvingRef.current = true
-    await applyRoundResolution(
-      { ...freshGame, resolved_round: freshGame.current_round - 1 },
-      freshTeams || [],
-      freshSubs || []
-    )
-    resolvingRef.current = false
-    setBusy(false)
+    setResolveError('')
+    resolvingRef.current = false  // clear any stuck guard
+    try {
+      const { data: freshGame, error: ge } = await supabase.from('games').select('*').eq('room_code', roomCode).single()
+      if (!freshGame) throw new Error('Could not load game' + (ge ? ': ' + ge.message : ''))
+
+      const { data: freshTeams, error: te } = await supabase.from('teams').select('*').eq('game_id', freshGame.id)
+      if (te) throw new Error('Could not load teams: ' + te.message)
+
+      const { data: freshSubs, error: se } = await supabase.from('submissions').select('*')
+        .eq('game_id', freshGame.id).eq('round_number', freshGame.current_round)
+      if (se) throw new Error('Could not load subs: ' + se.message)
+
+      await applyRoundResolution(freshGame, freshTeams || [], freshSubs || [])
+    } catch(e) {
+      setResolveError('Force resolve: ' + e.message)
+    } finally {
+      resolvingRef.current = false
+      setBusy(false)
+    }
   }
 
   function getShareUrl(path) {
@@ -383,14 +393,20 @@ export default function HostView() {
               })}
             </tbody>
           </table>
-          {lockedCount > 0 && (
-            <div style={{ marginTop: '0.75rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-              {allLocked && (
-                <span style={{ color: 'var(--green)', fontSize: '0.9rem' }}>All locked</span>
-              )}
-              <button className="btn-secondary btn-small" onClick={forceResolve} disabled={busy}>
-                Force Resolve Now
-              </button>
+          <div style={{ marginTop: '0.75rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+            {allLocked && (
+              <span style={{ color: 'var(--green)', fontSize: '0.9rem' }}>All locked</span>
+            )}
+            <button className="btn-secondary btn-small" onClick={forceResolve} disabled={busy}>
+              {busy ? 'Resolving…' : 'Force Resolve Now'}
+            </button>
+            <span style={{ color: 'var(--dim)', fontSize: '0.75rem' }}>
+              round {game.current_round}, resolved {game.resolved_round}
+            </span>
+          </div>
+          {resolveError && (
+            <div style={{ marginTop: '0.5rem', color: 'var(--red)', fontSize: '0.85rem', wordBreak: 'break-all' }}>
+              {resolveError}
             </div>
           )}
         </div>

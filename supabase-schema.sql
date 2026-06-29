@@ -97,15 +97,16 @@ language plpgsql
 security definer
 as $$
 declare
-  v_game_id       uuid;
-  v_current_round int;
+  v_game_id        uuid;
+  v_current_round  int;
   v_resolved_round int;
-  v_total_rounds  int;
-  v_status        text;
-  v_locked_count  int;
-  v_give_pot      int := 0;
-  v_give_share    int;
-  v_sub           record;
+  v_total_rounds   int;
+  v_status         text;
+  v_team_count     int;
+  v_locked_count   int;
+  v_give_pot       int := 0;
+  v_give_share     int;
+  v_sub            record;
 begin
   -- Lock the game row to prevent concurrent resolution
   select id, current_round, resolved_round, total_rounds, status
@@ -123,7 +124,11 @@ begin
     return false;
   end if;
 
-  -- Verify all 4 teams have locked submissions for this round
+  -- Count actual teams in this game (supports 1–4 players)
+  select count(*) into v_team_count from teams where game_id = v_game_id;
+  if v_team_count = 0 then return false; end if;
+
+  -- Verify all teams have locked submissions for this round
   select count(*) into v_locked_count
   from submissions s
   join teams t on t.id = s.team_id
@@ -131,7 +136,7 @@ begin
     and s.round_number = v_current_round
     and s.locked = true;
 
-  if v_locked_count < 4 then
+  if v_locked_count < v_team_count then
     return false;
   end if;
 
@@ -149,9 +154,9 @@ begin
     and s.round_number = v_current_round
     and s.action = 'give';
 
-  -- Distribute Give pot evenly to all 4 teams
+  -- Distribute Give pot evenly to all teams
   if v_give_pot > 0 then
-    v_give_share := v_give_pot / 4;
+    v_give_share := v_give_pot / v_team_count;
     update teams
     set score      = score + v_give_share,
         last_delta = last_delta + v_give_share
