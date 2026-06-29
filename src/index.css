@@ -21,6 +21,7 @@ html, body, #root {
   height: 100%;
   background: var(--bg);
   color: var(--text);
+  color-scheme: dark;
   font-family: system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
@@ -63,22 +64,25 @@ html, body, #root {
 /* ---- Inputs ---- */
 input[type="text"] {
   width: 100%;
-  background: var(--bg);
+  background: #08080f;
   border: 1px solid var(--border);
   border-radius: 8px;
-  color: var(--text);
-  -webkit-text-fill-color: var(--text); /* iOS Safari override */
+  color: #e4e4f0;
+  -webkit-text-fill-color: #e4e4f0;
+  caret-color: #e4e4f0;
   font-size: 1.1rem;
   padding: 0.75rem 1rem;
   outline: none;
   transition: border-color 0.15s;
   -webkit-appearance: none;
+  color-scheme: dark;
 }
 input[type="text"]:focus {
   border-color: var(--accent);
 }
 input[type="text"]::placeholder {
-  color: var(--dim);
+  color: #7070a0;
+  -webkit-text-fill-color: #7070a0;
 }
 
 /* ---- Buttons ---- */

@@ -400,7 +400,7 @@ function TeamRow({ slot, team, color, onAdjust, onClear, onRename, onAddTest, ga
               onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false) }}
               maxLength={20}
               autoFocus
-              style={{ fontSize: '0.9rem', padding: '0.25rem 0.5rem', width: '120px', color: 'var(--text)', WebkitTextFillColor: 'var(--text)' }}
+              style={{ fontSize: '0.9rem', padding: '0.25rem 0.5rem', width: '120px', color: '#e4e4f0', WebkitTextFillColor: '#e4e4f0', caretColor: '#e4e4f0' }}
             />
             <button className="btn-primary btn-small" onClick={save}>Save</button>
             <button className="btn-secondary btn-small" onClick={() => setEditing(false)}>✕</button>

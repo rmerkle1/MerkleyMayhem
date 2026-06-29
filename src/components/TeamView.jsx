@@ -443,7 +443,7 @@ function TeamHeader({ myTeam, slotColor, roomCode, editingName, setEditingName, 
               onKeyDown={e => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') setEditingName(false) }}
               maxLength={20}
               autoFocus
-              style={{ fontSize: '1rem', padding: '0.4rem 0.6rem', color: 'var(--text)', WebkitTextFillColor: 'var(--text)' }}
+              style={{ fontSize: '1rem', padding: '0.4rem 0.6rem', color: '#e4e4f0', WebkitTextFillColor: '#e4e4f0', caretColor: '#e4e4f0' }}
             />
             <button className="btn-primary btn-small" onClick={saveName} disabled={savingName}>
               {savingName ? '…' : 'Save'}
