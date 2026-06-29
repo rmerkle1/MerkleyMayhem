@@ -80,7 +80,6 @@ export default function HostView() {
     if (!confirm('Reset the game? All scores, submissions, and teams will be cleared.')) return
     setBusy(true)
     const id = gameIdRef.current
-    // Delete all teams (submissions cascade)
     await supabase.from('teams').delete().eq('game_id', id)
     await supabase.from('games').update({
       status: 'waiting',
@@ -113,6 +112,18 @@ export default function HostView() {
     await load()
   }
 
+  async function addTestTeam(slot) {
+    const id = gameIdRef.current
+    if (!id) return
+    const { error: err } = await supabase.from('teams').insert({
+      game_id:   id,
+      name:      `${SLOT_NAMES[slot - 1]}`,
+      device_id: `host-bot-${slot}-${Date.now()}`,
+      slot,
+    })
+    if (!err) await load()
+  }
+
   async function clearTeamSlot(teamId) {
     if (!confirm('Remove this team from the game?')) return
     await supabase.from('teams').delete().eq('id', teamId)
@@ -121,6 +132,37 @@ export default function HostView() {
 
   async function renameTeam(teamId, name) {
     await supabase.from('teams').update({ name }).eq('id', teamId)
+    await load()
+  }
+
+  // Host submits an action on behalf of a team (for testing with fewer devices)
+  async function hostSubmit(team, action) {
+    const id = gameIdRef.current
+    if (!id || !game) return
+
+    // For steal, auto-target first other team
+    let targets = []
+    if (action === 'steal') {
+      const otherTeam = teams.find(t => t.id !== team.id)
+      if (otherTeam) targets = [otherTeam.id]
+      else return // can't steal with no other team
+    }
+
+    const existing = subs.find(s => s.team_id === team.id)
+    const payload = {
+      game_id: id,
+      team_id: team.id,
+      round_number: game.current_round,
+      action,
+      targets,
+      locked: true,
+    }
+
+    if (existing) {
+      await supabase.from('submissions').update(payload).eq('id', existing.id)
+    } else {
+      await supabase.from('submissions').insert(payload)
+    }
     await load()
   }
 
@@ -160,6 +202,7 @@ export default function HostView() {
 
   const slots = [1, 2, 3, 4].map(slot => teams.find(t => t.slot === slot) || null)
   const lockedCount = subs.filter(s => s.locked).length
+  const allLocked = teams.length > 0 && lockedCount === teams.length
   const statusBadgeClass = `badge badge-${game.status}`
 
   return (
@@ -195,7 +238,7 @@ export default function HostView() {
           Round {game.current_round} of {game.total_rounds}
           {game.status === 'active' && (
             <span style={{ color: 'var(--dim)', marginLeft: '0.75rem' }}>
-              ({lockedCount}/4 locked)
+              ({lockedCount}/{teams.length} locked)
             </span>
           )}
         </div>
@@ -226,32 +269,32 @@ export default function HostView() {
               </tr>
             </thead>
             <tbody>
-              {slots.map((team, i) => {
-                if (!team) {
-                  return (
-                    <tr key={i}>
-                      <td style={{ color: 'var(--dim)' }}>Empty</td>
-                      <td>—</td><td>—</td><td>—</td>
-                    </tr>
-                  )
-                }
+              {teams.map((team, i) => {
                 const sub = subs.find(s => s.team_id === team.id)
                 const targetNames = (sub?.targets || [])
-                  .map(tid => teams.find(t => t.id === tid)?.name || tid)
+                  .map(tid => teams.find(t => t.id === tid)?.name || '?')
                   .join(', ')
+                const color = SLOT_COLORS[team.slot - 1]
 
                 return (
                   <tr key={team.id}>
                     <td>
-                      <span style={{ color: SLOT_COLORS[i], fontWeight: 700 }}>{team.name}</span>
+                      <span style={{ color, fontWeight: 700 }}>{team.name}</span>
                     </td>
                     <td>
-                      {sub ? (
+                      {sub?.locked ? (
                         <span className={`sub-action-${sub.action}`} style={{ textTransform: 'capitalize' }}>
                           {sub.action}
                         </span>
                       ) : (
-                        <span className="sub-pending">Thinking…</span>
+                        <span style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                          <button className="btn-small" style={{ background: '#0f1f0f', color: 'var(--green)', border: '1px solid #1a3a1a', borderRadius: '5px', padding: '0.25rem 0.5rem', fontSize: '0.78rem' }}
+                            onClick={() => hostSubmit(team, 'keep')}>Keep</button>
+                          <button className="btn-small" style={{ background: '#1a1a08', color: 'var(--gold)', border: '1px solid #3a3a10', borderRadius: '5px', padding: '0.25rem 0.5rem', fontSize: '0.78rem' }}
+                            onClick={() => hostSubmit(team, 'give')}>Give</button>
+                          <button className="btn-small" style={{ background: '#1f0f0f', color: 'var(--red)', border: '1px solid #3a1010', borderRadius: '5px', padding: '0.25rem 0.5rem', fontSize: '0.78rem' }}
+                            onClick={() => hostSubmit(team, 'steal')}>Steal</button>
+                        </span>
                       )}
                     </td>
                     <td style={{ color: 'var(--dim)', fontSize: '0.85rem' }}>
@@ -267,12 +310,12 @@ export default function HostView() {
               })}
             </tbody>
           </table>
-          {lockedCount === 4 && (
+          {allLocked && (
             <div style={{ marginTop: '0.75rem', color: 'var(--green)', fontSize: '0.9rem' }}>
               All locked — resolving…
             </div>
           )}
-          {lockedCount < 4 && lockedCount > 0 && (
+          {!allLocked && lockedCount > 0 && (
             <button className="btn-secondary btn-small" style={{ marginTop: '0.75rem' }}
               onClick={forceResolve} disabled={busy}>
               Force Resolve Now
@@ -293,6 +336,7 @@ export default function HostView() {
             onAdjust={(delta) => team && adjustScore(team.id, delta)}
             onClear={() => team && clearTeamSlot(team.id)}
             onRename={(name) => team && renameTeam(team.id, name)}
+            onAddTest={() => addTestTeam(i + 1)}
             gameStatus={game.status}
           />
         ))}
@@ -303,7 +347,7 @@ export default function HostView() {
         <div className="host-section-title">Game Controls</div>
         <div className="host-controls">
           {game.status === 'waiting' && (
-            <button className="btn-primary" onClick={startGame} disabled={busy || teams.length < 2}>
+            <button className="btn-primary" onClick={startGame} disabled={busy || teams.length < 1}>
               {busy ? 'Starting…' : 'Start Game'}
             </button>
           )}
@@ -316,9 +360,9 @@ export default function HostView() {
             Reset Game
           </button>
         </div>
-        {game.status === 'waiting' && teams.length < 2 && (
+        {game.status === 'waiting' && teams.length < 1 && (
           <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--dim)' }}>
-            Need at least 2 teams to start.
+            Add at least one team to start.
           </div>
         )}
       </div>
@@ -326,7 +370,7 @@ export default function HostView() {
   )
 }
 
-function TeamRow({ slot, team, color, onAdjust, onClear, onRename, gameStatus }) {
+function TeamRow({ slot, team, color, onAdjust, onClear, onRename, onAddTest, gameStatus }) {
   const [editing, setEditing] = useState(false)
   const [nameVal, setNameVal] = useState('')
 
@@ -356,7 +400,7 @@ function TeamRow({ slot, team, color, onAdjust, onClear, onRename, gameStatus })
               onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false) }}
               maxLength={20}
               autoFocus
-              style={{ fontSize: '0.9rem', padding: '0.25rem 0.5rem', width: '120px' }}
+              style={{ fontSize: '0.9rem', padding: '0.25rem 0.5rem', width: '120px', color: 'var(--text)', WebkitTextFillColor: 'var(--text)' }}
             />
             <button className="btn-primary btn-small" onClick={save}>Save</button>
             <button className="btn-secondary btn-small" onClick={() => setEditing(false)}>✕</button>
@@ -368,7 +412,7 @@ function TeamRow({ slot, team, color, onAdjust, onClear, onRename, gameStatus })
         )}
       </div>
 
-      {team && (
+      {team ? (
         <>
           <div className="score-adj">
             <button className="btn-secondary btn-small" onClick={() => onAdjust(-1)}>−</button>
@@ -376,16 +420,20 @@ function TeamRow({ slot, team, color, onAdjust, onClear, onRename, gameStatus })
             <button className="btn-secondary btn-small" onClick={() => onAdjust(+1)}>+</button>
           </div>
           <button className="btn-danger btn-small" onClick={onClear}
-            disabled={gameStatus === 'active'} title={gameStatus === 'active' ? 'Cannot clear mid-game' : ''}>
-            Kick
+            disabled={gameStatus === 'active'} title={gameStatus === 'active' ? 'Cannot remove mid-game' : ''}>
+            Remove
           </button>
         </>
+      ) : (
+        <button className="btn-secondary btn-small" onClick={onAddTest}
+          disabled={gameStatus === 'active'}>
+          + Add Team
+        </button>
       )}
     </div>
   )
 }
 
-// Standalone host creation form (shown when no roomCode in URL)
 function HostCreateForm() {
   const navigate = useNavigate()
   const [rounds, setRounds] = useState('5')

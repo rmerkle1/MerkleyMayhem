@@ -30,6 +30,7 @@ export default function TeamView() {
   // Track last resolved round to show delta
   const [lastResolvedRound, setLastResolvedRound] = useState(null)
   const prevGameRef = useRef(null)
+  const allTeamsRef = useRef([])
 
   const deviceId = getDeviceId()
   const myTeamId = getStoredSlot(roomCode)
@@ -88,6 +89,7 @@ export default function TeamView() {
 
     const mySub = (subsData || []).find(s => s.team_id === myTeamId) || null
 
+    allTeamsRef.current = teamsData || []
     setGame(gameData)
     setAllTeams(teamsData || [])
     setMyTeam(me)
@@ -142,9 +144,10 @@ export default function TeamView() {
     const mySub = (subsData || []).find(s => s.team_id === myTeamId) || null
     setSubmission(mySub)
 
-    // If all 4 are locked, trigger resolution
+    // If all present teams are locked, trigger resolution
     const locked = (subsData || []).filter(s => s.locked)
-    if (locked.length === 4) {
+    const teamCount = allTeamsRef.current.length
+    if (teamCount > 0 && locked.length === teamCount) {
       supabase.rpc('resolve_round', { p_room_code: roomCode }).then(() => load())
     }
   }
@@ -285,7 +288,7 @@ export default function TeamView() {
               {submission?.action}
             </strong>
           </div>
-          <div>{lockedCount} / 4 teams submitted</div>
+          <div>{lockedCount} / {allTeams.length} teams submitted</div>
         </div>
       </div>
     )
@@ -440,7 +443,7 @@ function TeamHeader({ myTeam, slotColor, roomCode, editingName, setEditingName, 
               onKeyDown={e => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') setEditingName(false) }}
               maxLength={20}
               autoFocus
-              style={{ fontSize: '1rem', padding: '0.4rem 0.6rem' }}
+              style={{ fontSize: '1rem', padding: '0.4rem 0.6rem', color: 'var(--text)', WebkitTextFillColor: 'var(--text)' }}
             />
             <button className="btn-primary btn-small" onClick={saveName} disabled={savingName}>
               {savingName ? '…' : 'Save'}

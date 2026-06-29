@@ -67,10 +67,12 @@ input[type="text"] {
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
+  -webkit-text-fill-color: var(--text); /* iOS Safari override */
   font-size: 1.1rem;
   padding: 0.75rem 1rem;
   outline: none;
   transition: border-color 0.15s;
+  -webkit-appearance: none;
 }
 input[type="text"]:focus {
   border-color: var(--accent);
