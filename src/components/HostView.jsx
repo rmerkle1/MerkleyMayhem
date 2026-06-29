@@ -15,7 +15,8 @@ export default function HostView() {
   const [busy, setBusy]       = useState(false)
   const [copied, setCopied]   = useState(false)
 
-  const gameIdRef = useRef(null)
+  const gameIdRef    = useRef(null)
+  const resolvingRef = useRef(false)
 
   useEffect(() => {
     if (!roomCode) return
@@ -60,12 +61,15 @@ export default function HostView() {
     setSubs(subsData || [])
     setLoading(false)
 
-    // Auto-resolve if all present teams are locked
+    // Auto-resolve if all present teams are locked (guard prevents concurrent calls)
     const lockedNow = (subsData || []).filter(s => s.locked).length
     const teamCountNow = (teamsData || []).length
     if (gameData.status === 'active' && teamCountNow > 0 && lockedNow === teamCountNow
-        && gameData.resolved_round < gameData.current_round) {
+        && gameData.resolved_round < gameData.current_round
+        && !resolvingRef.current) {
+      resolvingRef.current = true
       await applyRoundResolution(gameData, teamsData || [], subsData || [])
+      resolvingRef.current = false
     }
   }
 
@@ -222,6 +226,7 @@ export default function HostView() {
 
   async function forceResolve() {
     setBusy(true)
+    resolvingRef.current = false  // reset so force resolve is never blocked
     const { data: freshGame } = await supabase.from('games').select('*').eq('room_code', roomCode).single()
     if (!freshGame) { setBusy(false); return }
     const { data: freshTeams } = await supabase.from('teams').select('*').eq('game_id', freshGame.id)
@@ -231,11 +236,13 @@ export default function HostView() {
     await supabase.from('games')
       .update({ resolved_round: freshGame.current_round - 1 })
       .eq('id', freshGame.id)
+    resolvingRef.current = true
     await applyRoundResolution(
       { ...freshGame, resolved_round: freshGame.current_round - 1 },
       freshTeams || [],
       freshSubs || []
     )
+    resolvingRef.current = false
     setBusy(false)
   }
 
