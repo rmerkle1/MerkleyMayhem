@@ -59,6 +59,13 @@ export default function HostView() {
     setTeams(teamsData || [])
     setSubs(subsData || [])
     setLoading(false)
+
+    // Auto-trigger round resolution when all present teams are locked
+    const lockedNow = (subsData || []).filter(s => s.locked).length
+    const teamCountNow = (teamsData || []).length
+    if (gameData.status === 'active' && teamCountNow > 0 && lockedNow === teamCountNow) {
+      supabase.rpc('resolve_round', { p_room_code: roomCode })
+    }
   }
 
   async function startGame() {
@@ -310,16 +317,15 @@ export default function HostView() {
               })}
             </tbody>
           </table>
-          {allLocked && (
-            <div style={{ marginTop: '0.75rem', color: 'var(--green)', fontSize: '0.9rem' }}>
-              All locked — resolving…
+          {lockedCount > 0 && (
+            <div style={{ marginTop: '0.75rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+              {allLocked && (
+                <span style={{ color: 'var(--green)', fontSize: '0.9rem' }}>All locked</span>
+              )}
+              <button className="btn-secondary btn-small" onClick={forceResolve} disabled={busy}>
+                Force Resolve Now
+              </button>
             </div>
-          )}
-          {!allLocked && lockedCount > 0 && (
-            <button className="btn-secondary btn-small" style={{ marginTop: '0.75rem' }}
-              onClick={forceResolve} disabled={busy}>
-              Force Resolve Now
-            </button>
           )}
         </div>
       )}

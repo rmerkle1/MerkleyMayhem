@@ -10,52 +10,55 @@ export default function TeamView() {
   const [game, setGame]           = useState(null)
   const [myTeam, setMyTeam]       = useState(null)
   const [allTeams, setAllTeams]   = useState([])
-  const [submission, setSubmission] = useState(null) // current round submission for my team
-  const [allSubs, setAllSubs]     = useState([])     // all submissions this round
+  const [submission, setSubmission] = useState(null)
+  const [allSubs, setAllSubs]     = useState([])
   const [loading, setLoading]     = useState(true)
   const [error, setError]         = useState('')
 
-  // Action selection state
-  const [selectedAction, setSelectedAction] = useState(null)  // 'keep' | 'give' | 'steal'
-  const [stealCount, setStealCount]         = useState(1)     // 1 or 2
+  const [selectedAction, setSelectedAction] = useState(null)
+  const [stealCount, setStealCount]         = useState(1)
   const [selectedTargets, setSelectedTargets] = useState([])
   const [confirming, setConfirming]         = useState(false)
   const [locking, setLocking]               = useState(false)
 
-  // Name editing
   const [editingName, setEditingName] = useState(false)
   const [nameInput, setNameInput]     = useState('')
   const [savingName, setSavingName]   = useState(false)
 
-  // Track last resolved round to show delta
   const [lastResolvedRound, setLastResolvedRound] = useState(null)
-  const prevGameRef = useRef(null)
-  const allTeamsRef = useRef([])
 
-  const deviceId = getDeviceId()
-  const myTeamId = getStoredSlot(roomCode)
+  const myTeamId   = getStoredSlot(roomCode)
+  const gameIdRef  = useRef(null)
+  const prevRoundRef = useRef(null)
 
   useEffect(() => {
-    if (!myTeamId) {
-      navigate('/')
-      return
-    }
-    load()
+    if (!myTeamId) { navigate('/'); return }
 
-    // Subscribe to real-time changes
-    const channel = supabase
-      .channel(`team-${roomCode}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'games',       filter: `room_code=eq.${roomCode}` }, handleGameChange)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'teams',       filter: `game_id=eq.${getGameId()}` }, load)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'submissions', filter: `game_id=eq.${getGameId()}` }, handleSubChange)
-      .subscribe()
+    let channel
 
-    return () => supabase.removeChannel(channel)
+    // Load first so we have game_id, THEN subscribe with correct filters
+    load().then(() => {
+      if (!gameIdRef.current) return
+
+      channel = supabase
+        .channel(`team-${roomCode}-${gameIdRef.current}`)
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'games',
+          filter: `room_code=eq.${roomCode}`
+        }, () => load())
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'teams',
+          filter: `game_id=eq.${gameIdRef.current}`
+        }, () => load())
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'submissions',
+          filter: `game_id=eq.${gameIdRef.current}`
+        }, () => load())
+        .subscribe()
+    })
+
+    return () => { if (channel) supabase.removeChannel(channel) }
   }, [roomCode, myTeamId])
-
-  // We need the game_id for filters but we get it async — use a closure ref
-  const gameIdRef = useRef(null)
-  function getGameId() { return gameIdRef.current || 'placeholder' }
 
   async function load() {
     const { data: gameData } = await supabase
@@ -65,7 +68,6 @@ export default function TeamView() {
       .single()
 
     if (!gameData) { setError('Game not found.'); setLoading(false); return }
-
     gameIdRef.current = gameData.id
 
     const { data: teamsData } = await supabase
@@ -75,11 +77,7 @@ export default function TeamView() {
       .order('slot')
 
     const me = (teamsData || []).find(t => t.id === myTeamId)
-    if (!me) {
-      clearStoredSlot(roomCode)
-      navigate('/')
-      return
-    }
+    if (!me) { clearStoredSlot(roomCode); navigate('/'); return }
 
     const { data: subsData } = await supabase
       .from('submissions')
@@ -89,66 +87,36 @@ export default function TeamView() {
 
     const mySub = (subsData || []).find(s => s.team_id === myTeamId) || null
 
-    allTeamsRef.current = teamsData || []
+    // Detect round advance
+    if (prevRoundRef.current !== null && prevRoundRef.current !== gameData.current_round) {
+      setLastResolvedRound(gameData.resolved_round)
+      setSelectedAction(null)
+      setSelectedTargets([])
+      setStealCount(1)
+      setConfirming(false)
+    }
+    prevRoundRef.current = gameData.current_round
+
+    // Reset action UI when there's no submission yet
+    if (!mySub && !locking) {
+      setSelectedAction(null)
+      setSelectedTargets([])
+      setStealCount(1)
+      setConfirming(false)
+    }
+
     setGame(gameData)
     setAllTeams(teamsData || [])
     setMyTeam(me)
     setSubmission(mySub)
     setAllSubs(subsData || [])
-
-    // If there's no locked submission yet, reset selection state
-    if (!mySub) {
-      setSelectedAction(null)
-      setSelectedTargets([])
-      setStealCount(1)
-      setConfirming(false)
-    }
-
     setLoading(false)
-  }
 
-  function handleGameChange(payload) {
-    const newGame = payload.new
-    if (!newGame) return
-
-    // Detect round advance — check if resolved_round changed
-    if (prevGameRef.current && prevGameRef.current.resolved_round !== newGame.resolved_round) {
-      setLastResolvedRound(newGame.resolved_round)
-    }
-    prevGameRef.current = newGame
-
-    setGame(newGame)
-    // Reset UI for new round
-    if (prevGameRef.current && prevGameRef.current.current_round !== newGame.current_round) {
-      setSubmission(null)
-      setAllSubs([])
-      setSelectedAction(null)
-      setSelectedTargets([])
-      setStealCount(1)
-      setConfirming(false)
-    }
-    // Reload teams for updated scores/deltas
-    load()
-  }
-
-  async function handleSubChange() {
-    if (!gameIdRef.current || !game) return
-    const { data: subsData } = await supabase
-      .from('submissions')
-      .select('*')
-      .eq('game_id', gameIdRef.current)
-      .eq('round_number', game.current_round)
-
-    setAllSubs(subsData || [])
-
-    const mySub = (subsData || []).find(s => s.team_id === myTeamId) || null
-    setSubmission(mySub)
-
-    // If all present teams are locked, trigger resolution
+    // Trigger round resolution if all present teams are locked
     const locked = (subsData || []).filter(s => s.locked)
-    const teamCount = allTeamsRef.current.length
-    if (teamCount > 0 && locked.length === teamCount) {
-      supabase.rpc('resolve_round', { p_room_code: roomCode }).then(() => load())
+    const teamCount = (teamsData || []).length
+    if (gameData.status === 'active' && teamCount > 0 && locked.length === teamCount) {
+      supabase.rpc('resolve_round', { p_room_code: roomCode })
     }
   }
 
@@ -183,10 +151,7 @@ export default function TeamView() {
         .eq('round_number', game.current_round)
         .single()
 
-      if (existing?.locked) {
-        await load()
-        return
-      }
+      if (existing?.locked) { await load(); return }
 
       const payload = {
         game_id: gameIdRef.current,
@@ -223,7 +188,6 @@ export default function TeamView() {
   const deltaClass = deltaVal > 0 ? 'delta-pos' : deltaVal < 0 ? 'delta-neg' : 'delta-zero'
   const deltaStr = deltaVal > 0 ? `+${deltaVal}` : `${deltaVal}`
 
-  // Phase: waiting for game to start
   if (game.status === 'waiting') {
     return (
       <div className="team-wrap">
@@ -243,7 +207,6 @@ export default function TeamView() {
     )
   }
 
-  // Phase: game ended
   if (game.status === 'ended') {
     return (
       <div className="team-wrap">
@@ -261,7 +224,6 @@ export default function TeamView() {
     )
   }
 
-  // Phase: locked — waiting for others
   if (mySubLocked) {
     return (
       <div className="team-wrap">
@@ -270,7 +232,7 @@ export default function TeamView() {
           nameInput={nameInput} setNameInput={setNameInput}
           savingName={savingName} saveName={saveName} />
 
-        {lastResolvedRound === game.current_round - 1 && lastResolvedRound !== null && (
+        {lastResolvedRound != null && (
           <div className="round-result">
             <div className="round-result-title">Round {lastResolvedRound} result</div>
             <div className={`round-result-delta ${deltaClass}`}>{deltaStr}</div>
@@ -294,7 +256,6 @@ export default function TeamView() {
     )
   }
 
-  // Phase: choose action
   const readyToConfirm = selectedAction === 'keep' || selectedAction === 'give' ||
     (selectedAction === 'steal' && selectedTargets.length === stealCount)
 
@@ -305,7 +266,6 @@ export default function TeamView() {
           editingName={editingName} setEditingName={setEditingName}
           nameInput={nameInput} setNameInput={setNameInput}
           savingName={savingName} saveName={saveName} />
-
         <div className="action-section">
           <div style={{ flex: 1 }}>
             <div className="action-prompt" style={{ marginBottom: '1.5rem' }}>Confirm your action:</div>
@@ -323,9 +283,7 @@ export default function TeamView() {
               <button className="btn-primary" onClick={lockIn} disabled={locking}>
                 {locking ? 'Locking in…' : 'Lock In'}
               </button>
-              <button className="btn-secondary" onClick={() => setConfirming(false)}>
-                Go Back
-              </button>
+              <button className="btn-secondary" onClick={() => setConfirming(false)}>Go Back</button>
             </div>
           </div>
         </div>
@@ -368,7 +326,7 @@ export default function TeamView() {
           onClick={() => { setSelectedAction('give'); setSelectedTargets([]) }}
         >
           <span>Give</span>
-          <span className="action-btn-sub">+4 to shared pot (split 4 ways)</span>
+          <span className="action-btn-sub">+4 to shared pot (split {allTeams.length} ways)</span>
         </button>
 
         <button
@@ -391,12 +349,14 @@ export default function TeamView() {
               >
                 1 target (−2)
               </button>
-              <button
-                className={`steal-opt-btn ${stealCount === 2 ? 'active' : ''}`}
-                onClick={() => { setStealCount(2); setSelectedTargets([]) }}
-              >
-                2 targets (−1 each)
-              </button>
+              {otherTeams.length >= 2 && (
+                <button
+                  className={`steal-opt-btn ${stealCount === 2 ? 'active' : ''}`}
+                  onClick={() => { setStealCount(2); setSelectedTargets([]) }}
+                >
+                  2 targets (−1 each)
+                </button>
+              )}
             </div>
             <div className="action-prompt" style={{ fontSize: '0.9rem', margin: '0.75rem 0 0.5rem' }}>
               Select {stealCount === 1 ? 'a target' : '2 targets'}:
@@ -417,11 +377,7 @@ export default function TeamView() {
         )}
 
         <div className="lock-in-bar">
-          <button
-            className="btn-primary"
-            disabled={!readyToConfirm}
-            onClick={() => setConfirming(true)}
-          >
+          <button className="btn-primary" disabled={!readyToConfirm} onClick={() => setConfirming(true)}>
             Review &amp; Lock In
           </button>
         </div>
