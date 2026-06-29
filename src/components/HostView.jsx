@@ -63,32 +63,15 @@ export default function HostView() {
     // Auto-resolve if all present teams are locked
     const lockedNow = (subsData || []).filter(s => s.locked).length
     const teamCountNow = (teamsData || []).length
-    if (gameData.status === 'active' && teamCountNow > 0 && lockedNow === teamCountNow) {
-      await clientResolveRound(gameData, teamsData || [], subsData || [])
+    if (gameData.status === 'active' && teamCountNow > 0 && lockedNow === teamCountNow
+        && gameData.resolved_round < gameData.current_round) {
+      await applyRoundResolution(gameData, teamsData || [], subsData || [])
     }
   }
 
-  // Client-side round resolution — no SQL function required.
-  // Uses optimistic locking on resolved_round to prevent double-apply.
-  async function clientResolveRound(currentGame, currentTeams, currentSubs) {
-    const g = currentGame || game
-    const t = currentTeams || teams
-    const s = currentSubs || subs
-    if (!g || !gameIdRef.current || g.status !== 'active') return
-
-    // Atomically claim this resolution: only update if not yet resolved
-    const { data: claimed } = await supabase
-      .from('games')
-      .update({ resolved_round: g.current_round })
-      .eq('id', gameIdRef.current)
-      .eq('resolved_round', g.current_round - 1)
-      .select('id')
-
-    if (!claimed?.length) {
-      // Already resolved by another client — just reload
-      await load()
-      return
-    }
+  // Directly calculate and apply round results — no SQL function, no lock.
+  async function applyRoundResolution(g, t, s) {
+    if (!g || !g.id || g.status !== 'active') return
 
     // Calculate deltas
     const deltas = {}
@@ -112,7 +95,7 @@ export default function HostView() {
       }
     })
 
-    // Apply score changes
+    // Apply score changes to all teams
     for (const team of t) {
       const d = deltas[team.id] || 0
       await supabase.from('teams')
@@ -120,13 +103,14 @@ export default function HostView() {
         .eq('id', team.id)
     }
 
-    // Advance or end
+    // Advance round or end game
     const isLast = g.current_round >= g.total_rounds
     await supabase.from('games')
-      .update(isLast
-        ? { status: 'ended' }
-        : { current_round: g.current_round + 1 })
-      .eq('id', gameIdRef.current)
+      .update({
+        resolved_round: g.current_round,
+        ...(isLast ? { status: 'ended' } : { current_round: g.current_round + 1 }),
+      })
+      .eq('id', g.id)
 
     await load()
   }
@@ -238,12 +222,20 @@ export default function HostView() {
 
   async function forceResolve() {
     setBusy(true)
-    // Fetch fresh data then resolve client-side (bypasses SQL function)
     const { data: freshGame } = await supabase.from('games').select('*').eq('room_code', roomCode).single()
-    const { data: freshTeams } = await supabase.from('teams').select('*').eq('game_id', gameIdRef.current).order('slot')
+    if (!freshGame) { setBusy(false); return }
+    const { data: freshTeams } = await supabase.from('teams').select('*').eq('game_id', freshGame.id)
     const { data: freshSubs } = await supabase.from('submissions').select('*')
-      .eq('game_id', gameIdRef.current).eq('round_number', freshGame?.current_round)
-    await clientResolveRound(freshGame, freshTeams || [], freshSubs || [])
+      .eq('game_id', freshGame.id).eq('round_number', freshGame.current_round)
+    // Force-reset resolved_round so re-apply is never blocked
+    await supabase.from('games')
+      .update({ resolved_round: freshGame.current_round - 1 })
+      .eq('id', freshGame.id)
+    await applyRoundResolution(
+      { ...freshGame, resolved_round: freshGame.current_round - 1 },
+      freshTeams || [],
+      freshSubs || []
+    )
     setBusy(false)
   }
 
