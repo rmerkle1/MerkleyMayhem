@@ -60,12 +60,75 @@ export default function HostView() {
     setSubs(subsData || [])
     setLoading(false)
 
-    // Auto-trigger round resolution when all present teams are locked
+    // Auto-resolve if all present teams are locked
     const lockedNow = (subsData || []).filter(s => s.locked).length
     const teamCountNow = (teamsData || []).length
     if (gameData.status === 'active' && teamCountNow > 0 && lockedNow === teamCountNow) {
-      supabase.rpc('resolve_round', { p_room_code: roomCode })
+      await clientResolveRound(gameData, teamsData || [], subsData || [])
     }
+  }
+
+  // Client-side round resolution — no SQL function required.
+  // Uses optimistic locking on resolved_round to prevent double-apply.
+  async function clientResolveRound(currentGame, currentTeams, currentSubs) {
+    const g = currentGame || game
+    const t = currentTeams || teams
+    const s = currentSubs || subs
+    if (!g || !gameIdRef.current || g.status !== 'active') return
+
+    // Atomically claim this resolution: only update if not yet resolved
+    const { data: claimed } = await supabase
+      .from('games')
+      .update({ resolved_round: g.current_round })
+      .eq('id', gameIdRef.current)
+      .eq('resolved_round', g.current_round - 1)
+      .select('id')
+
+    if (!claimed?.length) {
+      // Already resolved by another client — just reload
+      await load()
+      return
+    }
+
+    // Calculate deltas
+    const deltas = {}
+    t.forEach(team => { deltas[team.id] = 0 })
+
+    const givePot = s.filter(sub => sub.action === 'give').length * 4
+    const giveShare = t.length > 0 ? Math.floor(givePot / t.length) : 0
+    if (giveShare > 0) t.forEach(team => { deltas[team.id] += giveShare })
+
+    s.filter(sub => sub.action === 'keep').forEach(sub => {
+      if (deltas[sub.team_id] !== undefined) deltas[sub.team_id] += 2
+    })
+
+    s.filter(sub => sub.action === 'steal').forEach(sub => {
+      if (deltas[sub.team_id] !== undefined) deltas[sub.team_id] += 1
+      const targets = sub.targets || []
+      if (targets.length === 1 && deltas[targets[0]] !== undefined) deltas[targets[0]] -= 2
+      if (targets.length >= 2) {
+        if (deltas[targets[0]] !== undefined) deltas[targets[0]] -= 1
+        if (deltas[targets[1]] !== undefined) deltas[targets[1]] -= 1
+      }
+    })
+
+    // Apply score changes
+    for (const team of t) {
+      const d = deltas[team.id] || 0
+      await supabase.from('teams')
+        .update({ score: team.score + d, last_delta: d })
+        .eq('id', team.id)
+    }
+
+    // Advance or end
+    const isLast = g.current_round >= g.total_rounds
+    await supabase.from('games')
+      .update(isLast
+        ? { status: 'ended' }
+        : { current_round: g.current_round + 1 })
+      .eq('id', gameIdRef.current)
+
+    await load()
   }
 
   async function startGame() {
@@ -175,8 +238,12 @@ export default function HostView() {
 
   async function forceResolve() {
     setBusy(true)
-    await supabase.rpc('resolve_round', { p_room_code: roomCode })
-    await load()
+    // Fetch fresh data then resolve client-side (bypasses SQL function)
+    const { data: freshGame } = await supabase.from('games').select('*').eq('room_code', roomCode).single()
+    const { data: freshTeams } = await supabase.from('teams').select('*').eq('game_id', gameIdRef.current).order('slot')
+    const { data: freshSubs } = await supabase.from('submissions').select('*')
+      .eq('game_id', gameIdRef.current).eq('round_number', freshGame?.current_round)
+    await clientResolveRound(freshGame, freshTeams || [], freshSubs || [])
     setBusy(false)
   }
 

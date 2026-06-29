@@ -112,11 +112,12 @@ export default function TeamView() {
     setAllSubs(subsData || [])
     setLoading(false)
 
-    // Trigger round resolution if all present teams are locked
+    // When all teams are locked, poll until the round advances (host resolves it)
     const locked = (subsData || []).filter(s => s.locked)
     const teamCount = (teamsData || []).length
-    if (gameData.status === 'active' && teamCount > 0 && locked.length === teamCount) {
-      supabase.rpc('resolve_round', { p_room_code: roomCode })
+    if (gameData.status === 'active' && teamCount > 0 && locked.length === teamCount
+        && gameData.resolved_round < gameData.current_round) {
+      setTimeout(() => load(), 1500)
     }
   }
 
